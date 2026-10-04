@@ -1,0 +1,113 @@
+use cron
+use valk.sync
+use valk.time
+
+class Stats {
+    runs: uint (0)
+    active: uint (0)
+    most_active: uint (0)
+    finished: uint (0)
+    // The largest distance of a start from the whole second, in microseconds
+    worst_start: uint (0)
+}
+
+fn track(stats: Stats, work_ms: uint) {
+    let late = time.unix_us() % 1_000_000
+    if late > stats.worst_start : stats.worst_start = late
+    stats.runs++
+    stats.active++
+    if stats.active > stats.most_active : stats.most_active = stats.active
+    if work_ms > 0 : time.sleep_ms(work_ms)
+    stats.active--
+    stats.finished++
+}
+
+fn run_for(scheduler: cron.Scheduler, ms: uint) {
+    let stop: shared sync.CancelToken = sync.CancelToken.new() !!
+    stop.cancel_after(ms)
+    scheduler.run(stop) !!
+}
+
+test "a job runs on the second, without drift" {
+    let scheduler = cron.Scheduler.new(time.utc())
+    let stats = Stats {}
+    let job = scheduler.add("* * * * * *", fn() { track(stats, 0) }) !!
+    run_for(scheduler, 3500)
+    println("worst start " + stats.worst_start + "us after the second")
+    assert(stats.runs >= 3 && stats.runs <= 4)
+    assert(job.runs == stats.runs)
+    assert(stats.worst_start < 100_000)
+}
+
+test "a busy job skips its runs, or overlaps when allowed" {
+    let skipping = cron.Scheduler.new(time.utc())
+    let skip_stats = Stats {}
+    let skip_job = skipping.add("* * * * * *", fn() { track(skip_stats, 2200) }) !!
+
+    let overlapping = cron.Scheduler.new(time.utc())
+    let overlap_stats = Stats {}
+    let overlap_job = overlapping.add("* * * * * *", fn() { track(overlap_stats, 2200) }) !!
+    overlap_job.overlap = true
+
+    // Both schedulers run side by side on this thread
+    let a = co run_for(skipping, 3500)
+    let b = co run_for(overlapping, 3500)
+    await a
+    await b
+    assert(skip_stats.most_active == 1)
+    assert(skip_job.skipped >= 1)
+    assert(skip_stats.runs + skip_job.skipped >= 3)
+    assert(overlap_stats.most_active >= 2)
+    assert(overlap_job.skipped == 0)
+    // run waits for the runs in progress
+    assert(skip_stats.active == 0 && overlap_stats.active == 0)
+    assert(overlap_stats.finished == overlap_stats.runs)
+}
+
+test "shutdown waits for a run in progress" {
+    let scheduler = cron.Scheduler.new(time.utc())
+    let stats = Stats {}
+    scheduler.add("* * * * * *", fn() { track(stats, 1500) }) !!
+    let started = time.mono_ms()
+    run_for(scheduler, 1200)
+    assert(stats.runs == 1)
+    assert(stats.finished == 1)
+    assert(time.mono_ms() - started >= 1500)
+}
+
+test "jobs are added, found and removed while running" {
+    let scheduler = cron.Scheduler.new(time.utc())
+    let once = Stats {}
+    let added = Stats {}
+    scheduler.add("* * * * * *", fn() {
+        track(once, 0)
+        scheduler.remove("once")
+        scheduler.add("* * * * * *", fn() { track(added, 0) }, "added") _
+    }, "once") !!
+    let late = scheduler.add("0 0 1 1 *", fn() {}, "late") !!
+
+    let refused = Stats {}
+    scheduler.add("* * * * *", fn() {}, "late") ! {
+        assert(error_is(E.code, exists))
+        assert(E.message == "A job named \"late\" already exists")
+        refused.runs++
+    }
+    assert(refused.runs == 1)
+    scheduler.add("* * * *", fn() {}) ! {
+        assert(error_is(E.code, syntax))
+    }
+
+    assert(isset(scheduler.get("late")))
+    let next = late.next_run() ?? panic("no next run")
+    assert(next.month() == 1 && next.day() == 1 && next.hour() == 0)
+    assert(next.zone().name == "UTC")
+
+    run_for(scheduler, 3500)
+    assert(once.runs == 1)
+    assert(added.runs >= 1)
+    assert(!isset(scheduler.get("once")))
+    assert(isset(scheduler.get("added")))
+    assert(scheduler.remove("late"))
+    assert(!scheduler.remove("late"))
+    assert(!isset(late.next_run()))
+}

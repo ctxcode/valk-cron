@@ -1,0 +1,113 @@
+use cron
+use valk.time
+
+// 2026-10-04 is a Sunday
+test "fields, lists, ranges and steps" {
+    assert(check(nexts("*/20 * * * *", "2026-10-04T12:05:00Z", 3), "2026-10-04 12:20:00 +00:00 2026-10-04 12:40:00 +00:00 2026-10-04 13:00:00 +00:00"))
+    assert(check(nexts("0 9-11,14 * * *", "2026-10-04T10:30:00Z", 4), "2026-10-04 11:00:00 +00:00 2026-10-04 14:00:00 +00:00 2026-10-05 09:00:00 +00:00 2026-10-05 10:00:00 +00:00"))
+    assert(check(nexts("10-40/15 3 * * *", "2026-10-04T00:00:00Z", 4), "2026-10-04 03:10:00 +00:00 2026-10-04 03:25:00 +00:00 2026-10-04 03:40:00 +00:00 2026-10-05 03:10:00 +00:00"))
+    assert(check(nexts("50/5 0 * * *", "2026-10-04T00:00:00Z", 3), "2026-10-04 00:50:00 +00:00 2026-10-04 00:55:00 +00:00 2026-10-05 00:50:00 +00:00"))
+    // Hours that wrap around midnight
+    assert(check(nexts("0 22-1 * * *", "2026-10-04T12:00:00Z", 5), "2026-10-04 22:00:00 +00:00 2026-10-04 23:00:00 +00:00 2026-10-05 00:00:00 +00:00 2026-10-05 01:00:00 +00:00 2026-10-05 22:00:00 +00:00"))
+    // Seconds first in six fields
+    assert(check(nexts("*/20 30 9 * * *", "2026-10-04T09:30:30Z", 3), "2026-10-04 09:30:40 +00:00 2026-10-05 09:30:00 +00:00 2026-10-05 09:30:20 +00:00"))
+    // Strictly after the start
+    assert(check(nexts("0 12 * * *", "2026-10-04T12:00:00Z", 1), "2026-10-05 12:00:00 +00:00"))
+    assert(check(nexts("0 12 * * *", "2026-10-04T11:59:59.999999Z", 1), "2026-10-04 12:00:00 +00:00"))
+    assert(check(prevs("0 12 * * *", "2026-10-04T12:00:00.000001Z", 1), "2026-10-04 12:00:00 +00:00"))
+    assert(check(prevs("0 12 * * *", "2026-10-04T12:00:00Z", 1), "2026-10-03 12:00:00 +00:00"))
+}
+
+test "names and weekdays" {
+    assert(check(nexts("0 9 * * MON-FRI", "2026-10-02T12:00:00Z", 3), "2026-10-05 09:00:00 +00:00 2026-10-06 09:00:00 +00:00 2026-10-07 09:00:00 +00:00"))
+    assert(check(nexts("0 9 * * fri-mon", "2026-10-01T12:00:00Z", 4), "2026-10-02 09:00:00 +00:00 2026-10-03 09:00:00 +00:00 2026-10-04 09:00:00 +00:00 2026-10-05 09:00:00 +00:00"))
+    assert(check(nexts("0 9 * * 7", "2026-10-01T12:00:00Z", 1), "2026-10-04 09:00:00 +00:00"))
+    assert(check(nexts("0 9 * * 5-7", "2026-10-01T12:00:00Z", 3), "2026-10-02 09:00:00 +00:00 2026-10-03 09:00:00 +00:00 2026-10-04 09:00:00 +00:00"))
+    assert(check(nexts("0 0 1 JAN,jul *", "2026-10-01T12:00:00Z", 2), "2027-01-01 00:00:00 +00:00 2027-07-01 00:00:00 +00:00"))
+    assert(check(nexts("0 0 1 NOV-FEB *", "2026-10-01T12:00:00Z", 5), "2026-11-01 00:00:00 +00:00 2026-12-01 00:00:00 +00:00 2027-01-01 00:00:00 +00:00 2027-02-01 00:00:00 +00:00 2027-11-01 00:00:00 +00:00"))
+}
+
+test "both day fields: either matches" {
+    // The 13th or a Friday
+    assert(check(nexts("0 0 13 * FRI", "2026-10-07T00:00:00Z", 4), "2026-10-09 00:00:00 +00:00 2026-10-13 00:00:00 +00:00 2026-10-16 00:00:00 +00:00 2026-10-23 00:00:00 +00:00"))
+    // A day field starting with `*` makes both required: odd days that are Mondays
+    assert(check(nexts("0 0 */2 * MON", "2026-10-01T00:00:00Z", 3), "2026-10-05 00:00:00 +00:00 2026-10-19 00:00:00 +00:00 2026-11-09 00:00:00 +00:00"))
+    assert(check(nexts("0 0 ? * MON", "2026-10-01T00:00:00Z", 2), "2026-10-05 00:00:00 +00:00 2026-10-12 00:00:00 +00:00"))
+    assert(check(nexts("0 0 1 * ?", "2026-10-02T00:00:00Z", 2), "2026-11-01 00:00:00 +00:00 2026-12-01 00:00:00 +00:00"))
+}
+
+test "L, W and #" {
+    assert(check(nexts("0 0 L * *", "2026-01-15T00:00:00Z", 3), "2026-01-31 00:00:00 +00:00 2026-02-28 00:00:00 +00:00 2026-03-31 00:00:00 +00:00"))
+    assert(check(nexts("0 0 L 2 *", "2027-03-01T00:00:00Z", 2), "2028-02-29 00:00:00 +00:00 2029-02-28 00:00:00 +00:00"))
+    assert(check(nexts("0 0 L-2 * *", "2026-01-15T00:00:00Z", 2), "2026-01-29 00:00:00 +00:00 2026-02-26 00:00:00 +00:00"))
+    // Oct 31 2026 is a Saturday, Nov 30 a Monday, Jan 31 2027 a Sunday
+    assert(check(nexts("0 0 LW * *", "2026-10-01T00:00:00Z", 4), "2026-10-30 00:00:00 +00:00 2026-11-30 00:00:00 +00:00 2026-12-31 00:00:00 +00:00 2027-01-29 00:00:00 +00:00"))
+    // Nov 15 2026 is a Sunday, Aug 1 a Saturday (the nearest weekday stays in the month)
+    assert(check(nexts("0 0 15W * *", "2026-10-20T00:00:00Z", 2), "2026-11-16 00:00:00 +00:00 2026-12-15 00:00:00 +00:00"))
+    assert(check(nexts("0 0 1W 8 *", "2026-01-01T00:00:00Z", 1), "2026-08-03 00:00:00 +00:00"))
+    assert(check(nexts("0 0 31W * *", "2026-10-01T00:00:00Z", 2), "2026-10-30 00:00:00 +00:00 2026-11-30 00:00:00 +00:00"))
+    assert(check(nexts("0 0 * * 5L", "2026-10-01T00:00:00Z", 3), "2026-10-30 00:00:00 +00:00 2026-11-27 00:00:00 +00:00 2026-12-25 00:00:00 +00:00"))
+    assert(check(nexts("0 0 * * L5", "2026-10-01T00:00:00Z", 1), "2026-10-30 00:00:00 +00:00"))
+    assert(check(nexts("0 0 * * MON#2", "2026-10-01T00:00:00Z", 3), "2026-10-12 00:00:00 +00:00 2026-11-09 00:00:00 +00:00 2026-12-14 00:00:00 +00:00"))
+    assert(check(nexts("0 0 * * SUN#5", "2026-10-01T00:00:00Z", 2), "2026-11-29 00:00:00 +00:00 2027-01-31 00:00:00 +00:00"))
+    assert(check(nexts("0 0 * * 1#1,5L", "2026-10-01T00:00:00Z", 3), "2026-10-05 00:00:00 +00:00 2026-10-30 00:00:00 +00:00 2026-11-02 00:00:00 +00:00"))
+    assert(check(prevs("0 0 L * *", "2026-03-15T00:00:00Z", 3), "2026-02-28 00:00:00 +00:00 2026-01-31 00:00:00 +00:00 2025-12-31 00:00:00 +00:00"))
+}
+
+test "macros" {
+    assert(check(nexts("@yearly", "2026-10-04T00:00:00Z", 1), "2027-01-01 00:00:00 +00:00"))
+    assert(check(nexts("@annually", "2026-10-04T00:00:00Z", 1), "2027-01-01 00:00:00 +00:00"))
+    assert(check(nexts("@monthly", "2026-10-04T00:00:00Z", 1), "2026-11-01 00:00:00 +00:00"))
+    assert(check(nexts("@weekly", "2026-10-04T00:00:00Z", 1), "2026-10-11 00:00:00 +00:00"))
+    assert(check(nexts("@daily", "2026-10-04T00:00:00Z", 1), "2026-10-05 00:00:00 +00:00"))
+    assert(check(nexts("@midnight", "2026-10-04T00:00:00Z", 1), "2026-10-05 00:00:00 +00:00"))
+    assert(check(nexts("  @HOURLY ", "2026-10-04T00:00:00Z", 1), "2026-10-04 01:00:00 +00:00"))
+}
+
+test "rare dates and the ends of the range" {
+    // The 29th or a Monday, in February
+    assert(check(nexts("0 0 29 2 MON", "2026-01-01T00:00:00Z", 2), "2026-02-02 00:00:00 +00:00 2026-02-09 00:00:00 +00:00"))
+    assert(check(nexts("0 0 29 2 *", "2026-01-01T00:00:00Z", 2), "2028-02-29 00:00:00 +00:00 2032-02-29 00:00:00 +00:00"))
+    assert(check(nexts("0 0 29 2 *", "2096-03-01T00:00:00Z", 1), "2104-02-29 00:00:00 +00:00"))
+    assert(check(nexts("* * * * *", "9999-12-31T23:58:30Z", 3), "9999-12-31 23:59:00 +00:00"))
+    assert(check(prevs("* * * * *", "0001-01-01T00:01:30Z", 3), "0001-01-01 00:01:00 +00:00 0001-01-01 00:00:00 +00:00"))
+    let schedule = cron.parse("0 0 1 1 *") !!
+    let end = time.DateTime.new(9999, 6, 1) !!
+    assert(!isset(schedule.next(end)))
+}
+
+test "matches" {
+    let schedule = cron.parse("30 9 * * MON-FRI") !!
+    assert(schedule.matches(time.DateTime.new(2026, 10, 5, 9, 30) !!))
+    assert(!schedule.matches(time.DateTime.new(2026, 10, 5, 9, 30, 1) !!))
+    assert(!schedule.matches(time.DateTime.new(2026, 10, 4, 9, 30) !!))
+    let zone = time.zone("Asia/Tokyo") !!
+    assert(schedule.matches(time.DateTime.new_in(zone, 2026, 10, 5, 9, 30) !!))
+    assert(schedule.expression == "30 9 * * MON-FRI")
+}
+
+test "errors" {
+    assert(check(parse_error("* * * *"), "syntax: Invalid cron expression \"* * * *\": it has 4 fields, where 5 or 6 are expected"))
+    assert(check(parse_error("* * * * * * *"), "syntax: Invalid cron expression \"* * * * * * *\": it has 7 fields, where 5 or 6 are expected"))
+    assert(check(parse_error(""), "syntax: Invalid cron expression \"\": it has 0 fields, where 5 or 6 are expected"))
+    assert(check(parse_error("60 * * * *"), "range: Invalid cron expression \"60 * * * *\": minute 60 is out of range 0-59"))
+    assert(check(parse_error("0 24 * * *"), "range: Invalid cron expression \"0 24 * * *\": hour 24 is out of range 0-23"))
+    assert(check(parse_error("0 0 0 * *"), "range: Invalid cron expression \"0 0 0 * *\": day of month 0 is out of range 1-31"))
+    assert(check(parse_error("0 0 * 13 *"), "range: Invalid cron expression \"0 0 * 13 *\": month 13 is out of range 1-12"))
+    assert(check(parse_error("0 0 * * 8"), "range: Invalid cron expression \"0 0 * * 8\": day of week 8 is out of range 0-7"))
+    assert(check(parse_error("*/0 * * * *"), "range: Invalid cron expression \"*/0 * * * *\": the step in */0 must be at least 1"))
+    assert(check(parse_error("1,,2 * * * *"), "syntax: Invalid cron expression \"1,,2 * * * *\": the minute field has an empty item"))
+    assert(check(parse_error("a * * * *"), "syntax: Invalid cron expression \"a * * * *\": 'A' is not a valid minute"))
+    assert(check(parse_error("0 0 * FOO *"), "syntax: Invalid cron expression \"0 0 * FOO *\": 'FOO' is not a valid month"))
+    assert(check(parse_error("0 0 * * MON#6"), "range: Invalid cron expression \"0 0 * * MON#6\": the week in MON#6 must be 1 to 5"))
+    assert(check(parse_error("0 0 L-31 * *"), "range: Invalid cron expression \"0 0 L-31 * *\": the offset in L-31 must be 1 to 30"))
+    assert(check(parse_error("0 L * * *"), "syntax: Invalid cron expression \"0 L * * *\": 'L' is not allowed in the hour field"))
+    assert(check(parse_error("? * * * *"), "syntax: Invalid cron expression \"? * * * *\": '?' is only allowed in the day fields"))
+    assert(check(parse_error("@every 5m"), "syntax: Invalid cron expression \"@every 5m\": unknown macro @every"))
+    assert(check(parse_error("@daily 5"), "syntax: Invalid cron expression \"@daily 5\": a macro stands alone"))
+    assert(check(parse_error("0 0 30 2 *"), "impossible: Invalid cron expression \"0 0 30 2 *\": no date matches it"))
+    assert(check(parse_error("0 0 31 4,6,9,11 *"), "impossible: Invalid cron expression \"0 0 31 4,6,9,11 *\": no date matches it"))
+    assert(check(parse_error("1-5-7 * * * *"), "syntax: Invalid cron expression \"1-5-7 * * * *\": '5-7' is not a valid minute"))
+    assert(check(parse_error("0 0 30 2 MON"), ""))
+    assert(check(parse_error("0 0 29 2 *"), ""))
+}

@@ -1,0 +1,501 @@
+use valk.time
+
+value ALL_DAYS (0xFFFF_FFFE)
+value ALL_MONTHS (0x1FFE)
+value ALL_WEEKDAYS (0x7F)
+value ALL_HOURS (0xFF_FFFF)
+// Bits 0, 7, 14, 21 and 28: one weekday through a month
+value WEEK_PATTERN (0x1020_4081)
+
+/// A parsed cron expression: the times it matches, and the next and previous ones.
+///
+/// Make one with `cron.parse`. A schedule matches wall-clock times, so `next` and `prev` work in
+/// the time zone of the `DateTime` they are given:
+///
+/// ```valk
+/// let schedule = cron.parse("30 9 * * MON-FRI") ! panic(E.message)
+/// let zone = time.zone("Europe/Amsterdam") ! panic("no zone")
+/// let at = schedule.next(time.DateTime.now_in(zone))
+/// ```
+///
+/// Around daylight saving changes a time that the clocks skip does not run, and a time that
+/// happens twice runs once, at its first occurrence. A schedule that runs every hour (`*` in
+/// the hour field) keeps running at its minutes through both passes of a repeated hour.
++ class Schedule {
+    /// The expression the schedule was parsed from.
+    ~+ expression: String
+    seconds: u64 (0)
+    minutes: u64 (0)
+    hours: u64 (0)
+    days: u64 (0)
+    months: u64 (0)
+    weekdays: u64 (0)
+    // `L-n` sets bit n, `nW` sets bit n
+    last_days: u64 (0)
+    near_weekdays: u64 (0)
+    last_weekday: bool (false)
+    // `wL` sets bit w, `w#n` sets bit w * 5 + n - 1
+    last_of: u64 (0)
+    nth: u64 (0)
+    dom_star: bool (false)
+    dow_star: bool (false)
+    // Every hour matches: such a schedule runs through both passes of a repeated hour
+    repeats: bool (false)
+
+    /// Returns the first time after `after` that the schedule matches, in the zone of `after`.
+    ///
+    /// Times are whole seconds; `null` when there is none before the year 10000.
+    + fn next(after: time.DateTime) ?time.DateTime {
+        let zone = after.zone()
+        let found = this.next_instant(floor_div(after.unix_us(), 1_000_000) + 1, zone)
+        if !isset(found) : return null
+        return to_datetime(found, zone)
+    }
+
+    /// Returns the last time before `before` that the schedule matches, in the zone of `before`.
+    ///
+    /// `null` when there is none after the year 1.
+    + fn prev(before: time.DateTime) ?time.DateTime {
+        let zone = before.zone()
+        let found = this.prev_instant(floor_div(before.unix_us() + 999_999, 1_000_000) - 1, zone)
+        if !isset(found) : return null
+        return to_datetime(found, zone)
+    }
+
+    /// Returns the times after `after`, in order, for `each`. They run up to the year 9999, so
+    /// `break` out.
+    ///
+    /// ```valk
+    /// each schedule.upcoming(time.DateTime.now()) as at, i {
+    ///     if i == 5 : break
+    ///     println(at)
+    /// }
+    /// ```
+    + fn upcoming(after: time.DateTime) Upcoming {
+        return Upcoming { schedule: this, last: after }
+    }
+
+    /// Returns whether the wall-clock time of `at`, to the second, matches the schedule.
+    + fn matches(at: time.DateTime) bool {
+        if (this.seconds >> at.second()) & 1 == 0 : return false
+        if (this.minutes >> at.minute()) & 1 == 0 : return false
+        if (this.hours >> at.hour()) & 1 == 0 : return false
+        if (this.months >> at.month()) & 1 == 0 : return false
+        let days = this.day_mask(at.year(), at.month())
+        return (days >> at.day()) & 1 == 1
+    }
+
+    // The days of a month the schedule matches, as bits 1 to 31
+    fn day_mask(year: int, month: uint) u64 {
+        let dim = days_in_month(year, month)
+        return this.days_for(dim, weekday_of(days_from_civil(year, month, 1)))
+    }
+
+    // For a month of `dim` days that starts on weekday `first`
+    fn days_for(dim: uint, first: uint) u64 {
+        let full: u64 = ((1.to(u64) << dim) - 1) << 1
+        let dom = this.days & full
+        let bits = this.last_days
+        while bits != 0 {
+            let k = bits.trailing_zeros()
+            bits &= bits - 1
+            if k < dim : dom |= 1.to(u64) << (dim - k)
+        }
+        bits = this.near_weekdays
+        while bits != 0 {
+            let n = bits.trailing_zeros()
+            bits &= bits - 1
+            dom |= 1.to(u64) << nearest_weekday(n < dim ? n : dim, dim, first)
+        }
+        if this.last_weekday {
+            dom |= 1.to(u64) << nearest_weekday(dim, dim, first)
+        }
+
+        let dow: u64 = 0
+        bits = this.weekdays
+        while bits != 0 {
+            let w = bits.trailing_zeros()
+            bits &= bits - 1
+            dow |= WEEK_PATTERN.to(u64) << first_day_of(w, first)
+        }
+        bits = this.last_of
+        while bits != 0 {
+            let w = bits.trailing_zeros()
+            bits &= bits - 1
+            let d = first_day_of(w, first)
+            dow |= 1.to(u64) << (d + 7 * ((dim - d) / 7))
+        }
+        bits = this.nth
+        while bits != 0 {
+            let b = bits.trailing_zeros()
+            bits &= bits - 1
+            let d = first_day_of(b / 5, first) + 7 * (b % 5)
+            if d <= dim : dow |= 1.to(u64) << d
+        }
+        dow &= full
+
+        if this.dom_star || this.dow_star : return dom & dow
+        return dom | dow
+    }
+
+    // The first matching wall-clock second at or after `wall`, seconds counted as if in UTC
+    fn next_wall(wall: int) ?int {
+        if wall < FIRST_SECOND : wall = FIRST_SECOND
+        let days = floor_div(wall, SECONDS_PER_DAY)
+        let rest = (wall - days * SECONDS_PER_DAY).to(uint)
+        let date = civil_from_days(days)
+        let year = date.year
+        let month = date.month
+        let day = date.day
+        let hour = rest / 3600
+        let minute = rest / 60 % 60
+        let second = rest % 60
+        while year < 10000 {
+            let m = next_bit(this.months, month)
+            if m > 12 {
+                year++
+                month = 1
+                day = 1
+                hour = 0
+                minute = 0
+                second = 0
+                continue
+            }
+            if m != month {
+                month = m
+                day = 1
+                hour = 0
+                minute = 0
+                second = 0
+            }
+            let d = next_bit(this.day_mask(year, month), day)
+            if d > 31 {
+                month++
+                day = 1
+                hour = 0
+                minute = 0
+                second = 0
+                continue
+            }
+            if d != day {
+                day = d
+                hour = 0
+                minute = 0
+                second = 0
+            }
+            let h = next_bit(this.hours, hour)
+            if h > 23 {
+                day++
+                hour = 0
+                minute = 0
+                second = 0
+                continue
+            }
+            if h != hour {
+                hour = h
+                minute = 0
+                second = 0
+            }
+            let mi = next_bit(this.minutes, minute)
+            if mi > 59 {
+                hour++
+                minute = 0
+                second = 0
+                continue
+            }
+            if mi != minute {
+                minute = mi
+                second = 0
+            }
+            let s = next_bit(this.seconds, second)
+            if s > 59 {
+                minute++
+                second = 0
+                continue
+            }
+            return days_from_civil(year, month, day) * SECONDS_PER_DAY + (hour * 3600 + minute * 60 + s).to(int)
+        }
+        return null
+    }
+
+    // The last matching wall-clock second at or before `wall`
+    fn prev_wall(wall: int) ?int {
+        if wall >= END_SECOND : wall = END_SECOND - 1
+        let days = floor_div(wall, SECONDS_PER_DAY)
+        let rest = (wall - days * SECONDS_PER_DAY).to(uint)
+        let date = civil_from_days(days)
+        let year = date.year
+        let month = date.month
+        let day = date.day
+        let hour = rest / 3600
+        let minute = rest / 60 % 60
+        let second = rest % 60
+        while year > 0 {
+            let m = prev_bit(this.months, month)
+            if m == 0 {
+                year--
+                month = 12
+                day = 31
+                hour = 23
+                minute = 59
+                second = 59
+                continue
+            }
+            if m != month {
+                month = m
+                day = days_in_month(year, month)
+                hour = 23
+                minute = 59
+                second = 59
+            }
+            let d = prev_bit(this.day_mask(year, month), day)
+            if d == 0 {
+                // To the end of the previous month
+                month--
+                day = 31
+                if month > 0 : day = days_in_month(year, month)
+                hour = 23
+                minute = 59
+                second = 59
+                continue
+            }
+            if d != day {
+                day = d
+                hour = 23
+                minute = 59
+                second = 59
+            }
+            let h = prev_bit_or_none(this.hours, hour)
+            if h > 23 {
+                day--
+                hour = 23
+                minute = 59
+                second = 59
+                continue
+            }
+            if h != hour {
+                hour = h
+                minute = 59
+                second = 59
+            }
+            let mi = prev_bit_or_none(this.minutes, minute)
+            if mi > 59 {
+                if hour == 0 {
+                    day--
+                    hour = 23
+                } else {
+                    hour--
+                }
+                minute = 59
+                second = 59
+                continue
+            }
+            if mi != minute {
+                minute = mi
+                second = 59
+            }
+            let s = prev_bit_or_none(this.seconds, second)
+            if s > 59 {
+                if minute == 0 {
+                    minute = 59
+                    if hour == 0 {
+                        day--
+                        hour = 23
+                    } else {
+                        hour--
+                    }
+                } else {
+                    minute--
+                }
+                second = 59
+                continue
+            }
+            return days_from_civil(year, month, day) * SECONDS_PER_DAY + (hour * 3600 + minute * 60 + s).to(int)
+        }
+        return null
+    }
+
+    // The first instant (Unix seconds) at or after `start` the schedule runs at in `zone`
+    fn next_instant(start: int, zone: time.Zone) ?int {
+        let offset = zone.offset_at(start)
+        let wall = start + offset
+        let result: ?int = null
+        while true {
+            let m = this.next_wall(wall)
+            if !isset(m) : break
+            let first = zone.offset_at(m - SECONDS_PER_DAY)
+            let second = zone.offset_at(m + SECONDS_PER_DAY)
+            // A wall time exists under the offset of the day before, the day after, or both
+            // (the first occurrence of a repeated time comes from the larger offset)
+            let a = m - first
+            let b = m - second
+            let a_ok = zone.offset_at(a) == first
+            let b_ok = first != second && zone.offset_at(b) == second
+            let early = a
+            let late = b
+            let early_ok = a_ok
+            let late_ok = b_ok
+            if b < a {
+                early = b
+                late = a
+                early_ok = b_ok
+                late_ok = a_ok
+            }
+            // The second occurrence of a repeated time only counts for an hourly schedule
+            if !(early_ok && late_ok) && late_ok {
+                early = late
+                early_ok = true
+                late_ok = false
+            }
+            if early_ok && early >= start {
+                result = early
+                break
+            }
+            if late_ok && this.repeats && late >= start {
+                result = late
+                break
+            }
+            wall = m + 1
+        }
+        // An hourly schedule also runs through the second pass of an hour the clocks turn back,
+        // which the walk above passed over
+        if this.repeats {
+            let later = zone.offset_at(start + SECONDS_PER_DAY)
+            if later < offset {
+                let change = find_change(zone, start, start + SECONDS_PER_DAY)
+                let m = this.next_wall(change + later)
+                if isset(m) {
+                    let instant = m - later
+                    if zone.offset_at(instant) == later && (!isset(result) || instant < result) : result = instant
+                }
+            }
+        }
+        return result
+    }
+
+    // The last instant at or before `end` the schedule runs at in `zone`
+    fn prev_instant(end: int, zone: time.Zone) ?int {
+        let offset = zone.offset_at(end)
+        let wall = end + offset
+        let result: ?int = null
+        while true {
+            let m = this.prev_wall(wall)
+            if !isset(m) : break
+            let first = zone.offset_at(m - SECONDS_PER_DAY)
+            let second = zone.offset_at(m + SECONDS_PER_DAY)
+            let a = m - first
+            let b = m - second
+            let a_ok = zone.offset_at(a) == first
+            let b_ok = first != second && zone.offset_at(b) == second
+            let early = a
+            let late = b
+            let early_ok = a_ok
+            let late_ok = b_ok
+            if b < a {
+                early = b
+                late = a
+                early_ok = b_ok
+                late_ok = a_ok
+            }
+            if !(early_ok && late_ok) && late_ok {
+                early = late
+                early_ok = true
+                late_ok = false
+            }
+            if late_ok && this.repeats && late <= end {
+                result = late
+                break
+            }
+            if early_ok && early <= end {
+                result = early
+                break
+            }
+            wall = m - 1
+        }
+        // The first pass of an hour the clocks turned back lies at later wall times than `end`
+        let earlier = zone.offset_at(end - SECONDS_PER_DAY)
+        if earlier > offset {
+            let change = find_change(zone, end - SECONDS_PER_DAY, end)
+            let m = this.prev_wall(change - 1 + earlier)
+            if isset(m) {
+                let instant = m - earlier
+                if instant <= end && zone.offset_at(instant) == earlier && (!isset(result) || instant > result) : result = instant
+            }
+        }
+        return result
+    }
+}
+
+/// The times a schedule matches after a start, from `Schedule.upcoming`, for `each`.
++ class Upcoming {
+    schedule: Schedule
+    last: time.DateTime
+
+    /// Returns the next time; throws `end` after the last one before the year 10000.
+    + fn _next(index: uint) time.DateTime !IterError {
+        let next = this.schedule.next(this.last)
+        if !isset(next) : throw .end
+        this.last = next
+        return next
+    }
+}
+
+// The first instant after `low` whose offset differs from the one at `low`; `high` has another
+fn find_change(zone: time.Zone, low: int, high: int) int {
+    let offset = zone.offset_at(low)
+    while high - low > 1 {
+        let middle = low + (high - low) / 2
+        if zone.offset_at(middle) == offset : low = middle
+        else : high = middle
+    }
+    return high
+}
+
+fn to_datetime(unix_seconds: int, zone: time.Zone) ?time.DateTime {
+    let utc = time.DateTime.from_unix_seconds(unix_seconds) ! return null
+    if zone.name == "UTC" : return utc
+    return utc.in_zone(zone) ! return null
+}
+
+// The day of the month (1 to 7) of the first weekday `w` in a month that starts on `first`
+fn first_day_of(w: uint, first: uint) uint {
+    return (w + 7 - first) % 7 + 1
+}
+
+// The weekday nearest to day `n` within the month, Quartz's `nW`
+fn nearest_weekday(n: uint, dim: uint, first: uint) uint {
+    let w = (first + n - 1) % 7
+    if w == 6 {
+        if n == 1 : return 3
+        return n - 1
+    }
+    if w == 0 {
+        if n == dim : return n - 2
+        return n + 1
+    }
+    return n
+}
+
+// The lowest set bit at or above `from`; 64 when there is none
+fn next_bit(mask: u64, from: uint) uint {
+    if from >= 64 : return 64
+    let rest = mask >> from
+    if rest == 0 : return 64
+    return from + rest.trailing_zeros()
+}
+
+// The highest set bit at or below `from`, bit 0 excluded; 0 when there is none
+fn prev_bit(mask: u64, from: uint) uint {
+    if from > 63 : from = 63
+    let rest = (mask & ((2.to(u64) << from) - 1)) >> 1
+    if rest == 0 : return 0
+    return 64 - rest.leading_zeros()
+}
+
+// The highest set bit at or below `from`, bit 0 included; 64 when there is none
+fn prev_bit_or_none(mask: u64, from: uint) uint {
+    if from > 63 : from = 63
+    let rest = mask & ((2.to(u64) << from) - 1)
+    if rest == 0 : return 64
+    return 63 - rest.leading_zeros()
+}

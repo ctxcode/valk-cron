@@ -1,0 +1,12 @@
+/// Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
+///
+/// - `syntax`: the text is not a cron expression: a wrong number of fields, an unknown name or
+///   macro, or a character that does not belong.
+/// - `range`: a value is outside its field, such as hour `24` or step `0`.
+/// - `impossible`: the expression reads, but no date ever matches it, such as `0 0 30 2 *`.
+/// - `exists`: `Scheduler.add` was given a name that another job already has.
+///
+/// `message` says what is wrong and quotes the expression.
++ error Error (syntax, range, impossible, exists) payload {
+    message: String
+}

@@ -1,0 +1,286 @@
+value KIND_SECOND (0)
+value KIND_MINUTE (1)
+value KIND_HOUR (2)
+value KIND_DOM (3)
+value KIND_MONTH (4)
+value KIND_DOW (5)
+
+/// Parses a cron expression.
+///
+/// Five fields are `minute hour day-of-month month day-of-week`; six put `second` first. A field
+/// is a list of items split by `,`: `*`, a value, a range `1-5`, and either with a step,
+/// `*/15` or `0-30/10`; `5/15` means `5-59/15`. Months and weekdays also take names (`JAN`,
+/// `MON`), weekdays run from 0 (Sunday) to 7 (Sunday again), and a range may wrap around, as in
+/// `FRI-MON`. `?` is `*` for the day fields.
+///
+/// The day of the month also takes `L` (the last day), `L-3` (three days before it), `15W` (the
+/// weekday nearest to the 15th, within the month) and `LW` (the last weekday). The day of the
+/// week takes `5L` or `L5` (the last Friday) and `MON#2` (the second Monday).
+///
+/// When both day fields are restricted a day matches either one, as in Vixie cron; when one
+/// of them starts with `*` or is `?`, a day must match both. The macros `@yearly`
+/// (`@annually`), `@monthly`, `@weekly`, `@daily` (`@midnight`) and `@hourly` stand for their
+/// usual expressions.
+///
+/// Throws `syntax` or `range` with a message that names the problem, and `impossible` for an
+/// expression no date can match, such as `0 0 30 2 *`.
++ fn parse(expression: String) Schedule !Error {
+    let fields = split_fields(expression)
+    if fields.length > 0 && fields[0][0] == '@' {
+        let name = fields[0].lower()
+        let count = fields.length
+        if name == "@yearly" || name == "@annually" : fields = split_fields("0 0 1 1 *")
+        else if name == "@monthly" : fields = split_fields("0 0 1 * *")
+        else if name == "@weekly" : fields = split_fields("0 0 * * 0")
+        else if name == "@daily" || name == "@midnight" : fields = split_fields("0 0 * * *")
+        else if name == "@hourly" : fields = split_fields("0 * * * *")
+        else : syntax_error(expression, "unknown macro " + fields[0])
+        if count > 1 : syntax_error(expression, "a macro stands alone")
+    }
+    if fields.length != 5 && fields.length != 6 {
+        syntax_error(expression, "it has " + fields.length + " fields, where 5 or 6 are expected")
+    }
+
+    let s = Schedule { expression: expression }
+    let at: uint = 0
+    if fields.length == 6 {
+        s.seconds = parse_field(s, fields[0], KIND_SECOND) !>
+        at = 1
+    } else {
+        s.seconds = 1
+    }
+    s.minutes = parse_field(s, fields[at], KIND_MINUTE) !>
+    s.hours = parse_field(s, fields[at + 1], KIND_HOUR) !>
+    s.days = parse_field(s, fields[at + 2], KIND_DOM) !>
+    s.months = parse_field(s, fields[at + 3], KIND_MONTH) !>
+    s.weekdays = parse_field(s, fields[at + 4], KIND_DOW) !>
+    s.repeats = s.hours == ALL_HOURS
+
+    if !can_match(s) : throw .impossible { message: invalid(expression, "no date matches it") }
+    return s
+}
+
+fn split_fields(text: String) Array[String] {
+    let fields = Array[String]{}
+    let i: uint = 0
+    while i < text.length {
+        let c = text[i]
+        if c == ' ' || c == '\t' {
+            i++
+            continue
+        }
+        let start = i
+        while i < text.length && text[i] != ' ' && text[i] != '\t' : i++
+        fields.append(text.range(start, i - start))
+    }
+    return fields
+}
+
+fn syntax_error(expression: String, message: String) !Error $throw {
+    throw .syntax { message: invalid(expression, message) }
+}
+
+fn range_error(expression: String, message: String) !Error $throw {
+    throw .range { message: invalid(expression, message) }
+}
+
+fn invalid(expression: String, message: String) String {
+    return "Invalid cron expression \"" + expression + "\": " + message
+}
+
+fn kind_name(kind: uint) String {
+    if kind == KIND_SECOND : return "second"
+    if kind == KIND_MINUTE : return "minute"
+    if kind == KIND_HOUR : return "hour"
+    if kind == KIND_DOM : return "day of month"
+    if kind == KIND_MONTH : return "month"
+    return "day of week"
+}
+
+fn kind_min(kind: uint) uint {
+    if kind == KIND_DOM || kind == KIND_MONTH : return 1
+    return 0
+}
+
+fn kind_max(kind: uint) uint {
+    if kind == KIND_HOUR : return 23
+    if kind == KIND_DOM : return 31
+    if kind == KIND_MONTH : return 12
+    if kind == KIND_DOW : return 7
+    return 59
+}
+
+fn parse_field(s: Schedule, field: String, kind: uint) u64 !Error {
+    let day_field = kind == KIND_DOM || kind == KIND_DOW
+    if field[0] == '*' || (day_field && field == "?") {
+        if kind == KIND_DOM : s.dom_star = true
+        if kind == KIND_DOW : s.dow_star = true
+    }
+    if field == "?" {
+        if !day_field : syntax_error(s.expression, "'?' is only allowed in the day fields")
+        if kind == KIND_DOM : return ALL_DAYS
+        return ALL_WEEKDAYS
+    }
+    let mask: u64 = 0
+    let start: uint = 0
+    while true {
+        let end = field.index_of_byte(',', start) !? field.length
+        let item = field.range(start, end - start)
+        if item.length == 0 : syntax_error(s.expression, "the " + kind_name(kind) + " field has an empty item")
+        mask |= parse_item(s, item.upper(), kind) !>
+        if end == field.length : break
+        start = end + 1
+    }
+    return mask
+}
+
+fn parse_item(s: Schedule, item: String, kind: uint) u64 !Error {
+    let name = kind_name(kind)
+    if kind == KIND_DOM {
+        if item == "L" {
+            s.last_days |= 1
+            return 0
+        }
+        if item == "LW" {
+            s.last_weekday = true
+            return 0
+        }
+        if item.starts_with("L-") {
+            let n = parse_number(s, item.range(2, item.length - 2), kind) !>
+            if n < 1 || n > 30 : range_error(s.expression, "the offset in " + item + " must be 1 to 30")
+            s.last_days |= 1.to(u64) << n
+            return 0
+        }
+        if item.length > 1 && item[item.length - 1] == 'W' {
+            let n = parse_value(s, item.range(0, item.length - 1), kind) !>
+            s.near_weekdays |= 1.to(u64) << n
+            return 0
+        }
+    }
+    if kind == KIND_DOW {
+        let hash = item.index_of_byte('#') ! {
+            // `5L`, or `L5` as croniter writes it
+            if item.length > 1 && (item[item.length - 1] == 'L' || item[0] == 'L') {
+                let digits = item[0] == 'L' ? item.range(1, item.length - 1) : item.range(0, item.length - 1)
+                let w = (parse_value(s, digits, kind) !>) % 7
+                s.last_of |= 1.to(u64) << w
+                return 0
+            }
+            return parse_range(s, item, kind) !>
+        }
+        let w = (parse_value(s, item.range(0, hash), kind) !>) % 7
+        let n = parse_number(s, item.range(hash + 1, item.length - hash - 1), kind) !>
+        if n < 1 || n > 5 : range_error(s.expression, "the week in " + item + " must be 1 to 5")
+        s.nth |= 1.to(u64) << (w * 5 + n - 1)
+        return 0
+    }
+    if item == "L" || item == "W" || item == "?" {
+        syntax_error(s.expression, "'" + item + "' is not allowed in the " + name + " field")
+    }
+    return parse_range(s, item, kind) !>
+}
+
+// `*`, `a`, `a-b`, each with an optional `/step`
+fn parse_range(s: Schedule, item: String, kind: uint) u64 !Error {
+    let min = kind_min(kind)
+    let max = kind_max(kind)
+    let base = item
+    let step: uint = 1
+    let has_step = false
+    let slash = item.index_of_byte('/') !? item.length
+    if slash < item.length {
+        base = item.range(0, slash)
+        step = parse_number(s, item.range(slash + 1, item.length - slash - 1), kind) !>
+        if step == 0 : range_error(s.expression, "the step in " + item + " must be at least 1")
+        has_step = true
+    }
+    let low = min
+    let high = max
+    if kind == KIND_DOW : high = 6
+    if base != "*" {
+        let dash = base.index_of_byte('-') !? base.length
+        if dash < base.length {
+            low = parse_value(s, base.range(0, dash), kind) !>
+            high = parse_value(s, base.range(dash + 1, base.length - dash - 1), kind) !>
+        } else {
+            low = parse_value(s, base, kind) !>
+            high = has_step ? max : low
+        }
+    }
+    if kind == KIND_DOW && low > high {
+        low = low % 7
+        high = high % 7
+    }
+
+    let mask: u64 = 0
+    if low <= high {
+        let v = low
+        while v <= high {
+            mask |= 1.to(u64) << v
+            v += step
+        }
+    } else {
+        // A range that wraps around: FRI-MON, 22-2
+        let size = max - min + 1
+        if kind == KIND_DOW : size = 7
+        let count = high + size - low + 1
+        let i: uint = 0
+        while i < count {
+            mask |= 1.to(u64) << (min + (low - min + i) % size)
+            i += step
+        }
+    }
+    if kind == KIND_DOW && (mask >> 7) & 1 == 1 : mask = (mask | 1) & ALL_WEEKDAYS
+    return mask
+}
+
+// A number or name within the range of the field
+fn parse_value(s: Schedule, text: String, kind: uint) uint !Error {
+    if text.length == 3 && is_letter(text[0]) {
+        let names = kind == KIND_MONTH ? "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC" : (kind == KIND_DOW ? "SUNMONTUEWEDTHUFRISAT" : "")
+        let i: uint = 0
+        while i + 3 <= names.length {
+            if names[i] == text[0] && names[i + 1] == text[1] && names[i + 2] == text[2] {
+                return i / 3 + kind_min(kind)
+            }
+            i += 3
+        }
+    }
+    let n = parse_number(s, text, kind) !>
+    if n < kind_min(kind) || n > kind_max(kind) {
+        range_error(s.expression, kind_name(kind) + " " + n + " is out of range " + kind_min(kind) + "-" + kind_max(kind))
+    }
+    return n
+}
+
+fn parse_number(s: Schedule, text: String, kind: uint) uint !Error {
+    if text.length == 0 || text.length > 4 : syntax_error(s.expression, "'" + text + "' is not a valid " + kind_name(kind))
+    let n: uint = 0
+    each text as c {
+        if c < '0' || c > '9' : syntax_error(s.expression, "'" + text + "' is not a valid " + kind_name(kind))
+        n = n * 10 + (c - '0').to(uint)
+    }
+    return n
+}
+
+fn is_letter(c: u8) bool {
+    return c >= 'A' && c <= 'Z'
+}
+
+// Whether some month of some year has a day the schedule matches
+fn can_match(s: Schedule) bool {
+    let month: uint = 1
+    while month <= 12 {
+        if (s.months >> month) & 1 == 1 {
+            let dim = days_in_month(2001, month)
+            let first: uint = 0
+            while first < 7 {
+                if s.days_for(dim, first) != 0 : return true
+                if month == 2 && s.days_for(29, first) != 0 : return true
+                first++
+            }
+        }
+        month++
+    }
+    return false
+}

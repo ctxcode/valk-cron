@@ -1,0 +1,8 @@
+{
+    "src": ".",
+    "dependencies": {
+        "cron": {
+            "src": "../"
+        }
+    }
+}

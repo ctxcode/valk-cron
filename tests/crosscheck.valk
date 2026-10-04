@@ -1,0 +1,52 @@
+use cron
+use valk.time
+
+fn unix_list(text: String) Array[int] {
+    let list = Array[int]{}
+    each text.split(",") as part : list.append(part.to_int() !? 0)
+    return list
+}
+
+test "next and prev match croniter" {
+    let failures: uint = 0
+    let count: uint = 0
+    each croniter_samples().split("\n") as line {
+        let parts = line.split("|")
+        let expression = parts[0]
+        let zone = time.zone(parts[1]) ! {
+            println("no zone " + parts[1])
+            failures++
+            continue
+        }
+        let start = time.DateTime.from_unix_seconds(parts[2].to_int() !? 0) !!
+        let schedule = cron.parse(expression) ! {
+            println(E.message)
+            failures++
+            continue
+        }
+        count++
+
+        let at = start.in_zone(zone) !!
+        each unix_list(parts[3]) as expected {
+            let next = schedule.next(at)
+            if !isset(next) || next.unix_seconds() != expected {
+                println("next " + expression + " in " + parts[1] + " after " + at + ": got " + (isset(next) ? next.to_string() : "null") + ", croniter " + expected)
+                failures++
+                break
+            }
+            at = next
+        }
+        at = start.in_zone(zone) !!
+        each unix_list(parts[4]) as expected {
+            let prev = schedule.prev(at)
+            if !isset(prev) || prev.unix_seconds() != expected {
+                println("prev " + expression + " in " + parts[1] + " before " + at + ": got " + (isset(prev) ? prev.to_string() : "null") + ", croniter " + expected)
+                failures++
+                break
+            }
+            at = prev
+        }
+    }
+    assert(count > 1000)
+    assert(failures == 0)
+}

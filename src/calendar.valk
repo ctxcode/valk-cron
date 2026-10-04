@@ -1,0 +1,59 @@
+value SECONDS_PER_DAY (86_400)
+// The wall-clock seconds of 0001-01-01 and of 10000-01-01, counted from 1970 as if in UTC
+value FIRST_SECOND (-62_135_596_800)
+value END_SECOND (253_402_300_800)
+
+struct Civil {
+    year: int
+    month: uint
+    day: uint
+}
+
+fn floor_div(a: int, b: int) int {
+    let q = a / b
+    if (a % b != 0) && ((a < 0) != (b < 0)) : q--
+    return q
+}
+
+fn is_leap(year: int) bool {
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_in_month(year: int, month: uint) uint {
+    if month == 2 : return is_leap(year) ? 29 : 28
+    if month == 4 || month == 6 || month == 9 || month == 11 : return 30
+    return 31
+}
+
+// Days since 1970-01-01 (Howard Hinnant's algorithm)
+fn days_from_civil(year: int, month: uint, day: uint) int {
+    let y = month <= 2 ? year - 1 : year
+    let era = floor_div(y, 400)
+    let yoe = y - era * 400
+    let m = month.to(int)
+    let mp = m > 2 ? m - 3 : m + 9
+    let doy = (153 * mp + 2) / 5 + day.to(int) - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(days: int) Civil {
+    let z = days + 719_468
+    let era = floor_div(z, 146_097)
+    let doe = z - era * 146_097
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let day = doy - (153 * mp + 2) / 5 + 1
+    let month = mp < 10 ? mp + 3 : mp - 9
+    let year = yoe + era * 400
+    if month <= 2 : year++
+    return Civil { year: year, month: month.to(uint), day: day.to(uint) }
+}
+
+// 0 is Sunday
+fn weekday_of(days: int) uint {
+    let w = (days + 4) % 7
+    if w < 0 : w += 7
+    return w.to(uint)
+}

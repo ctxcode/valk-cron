@@ -1,0 +1,43 @@
+use cron
+use valk.sync
+use valk.time
+
+class Counter {
+    ticks: uint (0)
+}
+
+fn main() {
+    // The next times of an expression, in a time zone
+    let schedule = cron.parse("30 9 * * MON-FRI") ! panic(E.message)
+    let amsterdam = time.zone("Europe/Amsterdam") ! panic("Unknown zone")
+    let start = time.DateTime.new_in(amsterdam, 2026, 10, 2, 12) ! panic("Invalid date")
+    println("\"" + schedule.expression + "\" after " + start + ":")
+    each schedule.upcoming(start) as at, i {
+        if i == 3 : break
+        println("  " + at)
+    }
+    let before = schedule.prev(start) ?? panic("No earlier time")
+    println("  and before it: " + before)
+
+    // Around daylight saving time: 02:30 is skipped on March 29, and runs once on October 25
+    let night = cron.parse("30 2 * * *") ! panic(E.message)
+    let spring = time.DateTime.new_in(amsterdam, 2026, 3, 28, 12) ! panic("Invalid date")
+    println("\"30 2 * * *\" after " + spring + ": " + (night.next(spring) ?? spring))
+
+    // Bad expressions say what is wrong
+    cron.parse("0 24 * * *") ! println(E.message)
+
+    // A scheduler runs jobs until its token is cancelled
+    let scheduler = cron.Scheduler.new(time.utc())
+    let counter = Counter {}
+    scheduler.add("* * * * * *", fn() {
+        counter.ticks++
+        println("tick " + counter.ticks + " at " + time.DateTime.now().format("H:i:s.v"))
+    }, "ticker") ! panic(E.message)
+
+    let stop: shared sync.CancelToken = sync.CancelToken.new() ! panic("Cannot make a token")
+    // A service would use signal.cancel_on_shutdown(stop) instead
+    stop.cancel_after(3200)
+    scheduler.run(stop) ! panic("Cannot run the scheduler")
+    println("stopped after " + counter.ticks + " ticks")
+}

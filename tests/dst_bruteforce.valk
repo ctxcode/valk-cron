@@ -1,0 +1,73 @@
+use cron
+use valk.time
+
+// Whether the instant runs by the rules, worked out minute by minute: the wall-clock time
+// matches, and it is that wall time's first occurrence or the schedule runs every hour
+fn runs_at(schedule: cron.Schedule, instant: int, zone: time.Zone, hourly: bool) bool {
+    let at = (time.DateTime.from_unix_seconds(instant) !!).in_zone(zone) !!
+    if !schedule.matches(at) : return false
+    if hourly : return true
+    let wall = instant + zone.offset_at(instant)
+    let earlier_offset = zone.offset_at(instant - 86_400)
+    let earlier = wall - earlier_offset
+    return !(earlier < instant && zone.offset_at(earlier) == earlier_offset)
+}
+
+test "around daylight saving changes, next and prev agree with a minute by minute scan" {
+    let expressions = Array[String]{ "*/7 * * * *", "30 2 * * *", "0,30 0-3 * * *", "15 * * * *", "0 0 * * *", "*/30 1-2 * * *", "45 23 * * *", "0 1 * * SUN" }
+    let zones = Array[String]{ "Europe/Amsterdam", "America/New_York", "Australia/Lord_Howe", "America/Santiago", "America/Havana" }
+    let failures: uint = 0
+    let windows: uint = 0
+    each zones as name {
+        let zone = time.zone(name) !!
+        let start = (time.DateTime.new(2026, 1, 1) !!).unix_seconds()
+        let t = start
+        while t < start + 366 * 86_400 {
+            if zone.offset_at(t) == zone.offset_at(t + 3600) {
+                t += 3600
+                continue
+            }
+            windows++
+            let from = t - t % 60 - 86_400
+            let until = from + 2 * 86_400
+            each expressions as expression {
+                let schedule = cron.parse(expression) !!
+                let hourly = expression.split(" ")[1] == "*"
+                let expected = Array[int]{}
+                let i = from + 60
+                while i < until {
+                    if runs_at(schedule, i, zone, hourly) : expected.append(i)
+                    i += 60
+                }
+                // Forward from the start of the window
+                let at = (time.DateTime.from_unix_seconds(from) !!).in_zone(zone) !!
+                let got = Array[int]{}
+                while true {
+                    let next = schedule.next(at)
+                    if !isset(next) : break
+                    if next.unix_seconds() >= until : break
+                    got.append(next.unix_seconds())
+                    at = next
+                }
+                // Backward from its end
+                at = (time.DateTime.from_unix_seconds(until) !!).in_zone(zone) !!
+                let back = Array[int]{}
+                while true {
+                    let prev = schedule.prev(at)
+                    if !isset(prev) : break
+                    if prev.unix_seconds() <= from : break
+                    back.append(prev.unix_seconds())
+                    at = prev
+                }
+                back.reverse()
+                if got != expected || back != expected {
+                    println(name + " " + expression + " around " + t + ": scan " + expected.length + ", next " + got.length + ", prev " + back.length)
+                    failures++
+                }
+            }
+            t += 3600
+        }
+    }
+    assert(windows >= 9)
+    assert(failures == 0)
+}

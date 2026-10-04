@@ -1,0 +1,62 @@
+use cron
+use valk.time
+
+// The next `count` times of `expression` after `start` (ISO 8601), joined by spaces
+fn nexts(expression: String, start: String, count: uint, zone: ?String (null)) String {
+    let schedule = cron.parse(expression) ! return "error: " + E.message
+    let at = time.DateTime.from_iso8601(start) ! return "bad start"
+    if isset(zone) : at = at.in_zone(time.zone(zone) ! return "bad zone") ! return "bad zone"
+    let out = ""
+    each schedule.upcoming(at) as next, i {
+        if i == count : break
+        if i > 0 : out = out + " "
+        out = out + show(next)
+    }
+    return out
+}
+
+// The previous `count` times, the latest first
+fn prevs(expression: String, start: String, count: uint, zone: ?String (null)) String {
+    let schedule = cron.parse(expression) ! return "error: " + E.message
+    let at = time.DateTime.from_iso8601(start) ! return "bad start"
+    if isset(zone) : at = at.in_zone(time.zone(zone) ! return "bad zone") ! return "bad zone"
+    let out = ""
+    let i: uint = 0
+    while i < count {
+        let prev = schedule.prev(at)
+        if !isset(prev) : break
+        if i > 0 : out = out + " "
+        out = out + show(prev)
+        at = prev
+        i++
+    }
+    return out
+}
+
+// The message of the error `parse` throws, or "" when it reads
+fn parse_error(expression: String) String {
+    cron.parse(expression) ! {
+        let code = "impossible"
+        if error_is(E.code, syntax) : code = "syntax"
+        if error_is(E.code, range) : code = "range"
+        return code + ": " + E.message
+    }
+    return ""
+}
+
+fn check(got: String, expected: String) bool {
+    if got == expected : return true
+    println("got:      " + got)
+    println("expected: " + expected)
+    return false
+}
+
+// `Y-m-d H:i:s P`, which compilers before 0.7.8 cannot format
+fn show(at: time.DateTime) String {
+    let offset = at.utc_offset()
+    let sign = offset < 0 ? "-" : "+"
+    if offset < 0 : offset = -offset
+    let hours = (offset / 3600).to_string().pad_left('0', 2)
+    let minutes = (offset / 60 % 60).to_string().pad_left('0', 2)
+    return at.format("Y-m-d H:i:s ") + sign + hours + ":" + minutes
+}

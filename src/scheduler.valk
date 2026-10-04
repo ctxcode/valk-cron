@@ -1,0 +1,186 @@
+use valk.sync
+use valk.time
+
+// The longest wait between two looks at the clock, so a changed system clock is noticed
+value MAX_WAIT_MS (60_000)
+
+/// Runs jobs on cron schedules, each run in a coroutine on the thread that calls `run`.
+///
+/// ```valk
+/// let scheduler = cron.Scheduler.new()
+/// scheduler.add("*/5 * * * *", fn() { println("every five minutes") }) ! panic(E.message)
+/// let stop: shared sync.CancelToken = sync.CancelToken.new() ! panic("init")
+/// scheduler.run(stop) ! panic("init")
+/// ```
+///
+/// Times follow the scheduler's zone, the local one unless another is given. Each run is
+/// due at a time the schedule gives, not a fixed interval after the previous run, so the runs
+/// do not drift. A job whose previous run is still busy when it is due again skips that run,
+/// unless its `overlap` is set. Use a scheduler from one thread; a job that does heavy work
+/// can start a thread of its own.
++ class Scheduler {
+    /// The zone the schedules are read in.
+    ~ zone: time.Zone
+    jobs: Array[Job] (.{})
+    wake: ?shared sync.Channel[bool] (null)
+    busy: uint (0)
+
+    /// Returns a scheduler that reads its schedules in `zone`, by default `time.local_zone()`.
+    + static fn new(zone: ?time.Zone (null)) Scheduler {
+        return Scheduler { zone: zone ?? time.local_zone() }
+    }
+
+    /// Adds a job that calls `callback` at the times of `expression` (see `cron.parse`).
+    ///
+    /// Jobs can be added before and while the scheduler runs. A `name` lets `remove` and `get`
+    /// find the job; throws `exists` when another job has it, and the errors of `parse`.
+    + fn add(expression: String, callback: fn()(), name: String ("")) Job !Error {
+        let schedule = parse(expression) !>
+        if name.length > 0 && isset(this.get(name)) {
+            throw .exists { message: "A job named \"" + name + "\" already exists" }
+        }
+        let job = Job { name: name, schedule: schedule, callback: callback, scheduler: this }
+        job.due = schedule.next_instant(now_seconds() + 1, this.zone)
+        this.jobs.append(job)
+        this.poke()
+        return job
+    }
+
+    /// Returns the job called `name`, or `null`.
+    + fn get(name: String) ?Job {
+        each this.jobs as job {
+            if job.name == name && !job.removed : return job
+        }
+        return null
+    }
+
+    /// Removes the job called `name`; returns false when there is none. A run in progress
+    /// finishes.
+    + fn remove(name: String) bool {
+        let job = this.get(name)
+        if !isset(job) : return false
+        job.remove()
+        return true
+    }
+
+    /// Runs the jobs until `stop` is cancelled, then waits for the runs in progress to finish.
+    ///
+    /// Called from a coroutine it only suspends that coroutine; called outside one it runs the
+    /// thread's coroutines until it returns. A job whose time is missed, because the thread
+    /// was busy or asleep, runs once as soon as it can. Throws `init` when the scheduler's
+    /// wake-up channel cannot be made.
+    + fn run(stop: shared sync.CancelToken) !sync.SyncError {
+        let task = co this.loop(stop)
+        await task !>
+    }
+
+    fn loop(stop: shared sync.CancelToken) !sync.SyncError {
+        if isset(this.wake) : panic("This scheduler is already running")
+        let wake: shared sync.Channel[bool] = sync.Channel[bool].new(1) !>
+        this.wake = wake
+        // Runs count from now, not from when the jobs were added
+        let start = now_seconds() + 1
+        each this.jobs as job : job.due = job.schedule.next_instant(start, this.zone)
+        while !stop.is_cancelled() {
+            let now = time.unix_us().to(int)
+            let soonest: int = now + MAX_WAIT_MS * 1000
+            let i: uint = 0
+            while i < this.jobs.length {
+                let job = this.jobs[i]
+                let due = job.due
+                if job.removed || !isset(due) {
+                    this.jobs.remove(i)
+                    job.due = null
+                    continue
+                }
+                let at = due
+                if at * 1_000_000 <= now {
+                    this.fire(job, at, now)
+                    at = job.due ?? at
+                }
+                if at * 1_000_000 < soonest : soonest = at * 1_000_000
+                i++
+            }
+            let wait_ms = (soonest - now + 999) / 1000
+            if wait_ms < 1 : wait_ms = 1
+            wake.recv(wait_ms.to(uint), stop) ! {
+                if error_is(E.code, cancelled) : break
+            }
+        }
+        while this.busy > 0 : wake.recv() _
+        this.wake = null
+    }
+
+    fn fire(job: Job, at: int, now: int) {
+        let now_s = floor_div(now, 1_000_000)
+        let next = job.schedule.next_instant(at + 1, this.zone)
+        // Behind by more than one run: the missed ones are dropped
+        if isset(next) && next <= now_s : next = job.schedule.next_instant(now_s + 1, this.zone)
+        job.due = next
+        if job.active > 0 && !job.overlap {
+            job.skipped++
+            return
+        }
+        job.active++
+        this.busy++
+        co this.execute(job)
+    }
+
+    fn execute(job: Job) {
+        job.runs++
+        let callback = job.callback
+        callback()
+        job.active--
+        this.busy--
+        this.poke()
+    }
+
+    fn poke() {
+        let wake = this.wake
+        if isset(wake) : wake.try_send(true) _
+    }
+}
+
+/// A job of a `Scheduler`, from `Scheduler.add`.
++ class Job {
+    /// The name given to `add`, or an empty string.
+    ~ name: String
+    /// The schedule the job runs on.
+    ~ schedule: Schedule
+    /// Whether a run may start while the previous one is still busy. Off by default: such a
+    /// run is skipped and counted in `skipped`.
+    + overlap: bool (false)
+    /// How many runs have started.
+    ~ runs: uint (0)
+    /// How many runs were skipped because the previous one was still busy.
+    ~ skipped: uint (0)
+    callback: fn()()
+    scheduler: Scheduler
+    // The next run in Unix seconds, null when there is none
+    due: ?int (null)
+    active: uint (0)
+    removed: bool (false)
+
+    /// Returns when the job runs next, in the scheduler's zone; `null` once it was removed or
+    /// its schedule has no more times.
+    + fn next_run() ?time.DateTime {
+        let due = this.due
+        if this.removed || !isset(due) : return null
+        return to_datetime(due, this.scheduler.zone)
+    }
+
+    /// Returns whether a run of the job is in progress.
+    + fn is_running() bool {
+        return this.active > 0
+    }
+
+    /// Removes the job from its scheduler. A run in progress finishes.
+    + fn remove() {
+        this.removed = true
+        this.scheduler.poke()
+    }
+}
+
+fn now_seconds() int {
+    return floor_div(time.unix_us().to(int), 1_000_000)
+}

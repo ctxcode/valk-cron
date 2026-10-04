@@ -1,0 +1,33 @@
+use cron
+use valk.time
+
+// Times chained `next` calls per expression, in UTC and in a zone with daylight saving time
+fn main() {
+    let expressions = Array[String]{ "*/5 * * * *", "0 9 * * MON-FRI", "30 2 L * *", "0 0 * * L5", "0 0 29 2 *", "*/10 * * * * *" }
+    let zones = Array[String]{ "UTC", "Europe/Amsterdam" }
+    let count: uint = 200_000
+    each zones as name {
+        let zone = time.zone(name) !!
+        each expressions as expression {
+            let schedule = cron.parse(expression) !!
+            let start = time.DateTime.new_in(zone, 2026, 1, 1) !!
+            let at = start
+            let started = time.mono_ns()
+            let i: uint = 0
+            while i < count {
+                // Back to the start at the end of the year range
+                at = schedule.next(at) ?? start
+                i++
+            }
+            let ns = (time.mono_ns() - started) / count
+            println(name + " \"" + expression + "\": " + ns + " ns per next, last " + at.format("Y-m-d"))
+        }
+    }
+    let started = time.mono_ns()
+    let i: uint = 0
+    while i < count {
+        cron.parse("0 9-17/2 1,15,L * MON-FRI") !!
+        i++
+    }
+    println("parse: " + (time.mono_ns() - started) / count + " ns")
+}
