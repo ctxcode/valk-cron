@@ -22,7 +22,7 @@ value MAX_WAIT_MS (60_000)
     /// The zone the schedules are read in.
     ~ zone: time.Zone
     jobs: Array[Job] (.{})
-    wake: ?shared sync.Channel[bool] (null)
+    wake: ?atomic sync.Channel[bool] (null)
     busy: uint (0)
 
     /// Returns a scheduler that reads its schedules in `zone`, by default `time.local_zone()`.
@@ -69,14 +69,14 @@ value MAX_WAIT_MS (60_000)
     /// thread's coroutines until it returns. A job whose time is missed, because the thread
     /// was busy or asleep, runs once as soon as it can. Throws `init` when the scheduler's
     /// wake-up channel cannot be made.
-    + fn run(stop: shared sync.CancelToken) !sync.SyncError {
+    + fn run(stop: atomic sync.CancelToken) !sync.SyncError {
         let task = co this.loop(stop)
         await task !>
     }
 
-    fn loop(stop: shared sync.CancelToken) !sync.SyncError {
+    fn loop(stop: atomic sync.CancelToken) !sync.SyncError {
         if isset(this.wake) : panic("This scheduler is already running")
-        let wake: shared sync.Channel[bool] = sync.Channel[bool].new(1) !>
+        let wake: atomic sync.Channel[bool] = sync.Channel[bool].new(1) !>
         this.wake = wake
         // Runs count from now, not from when the jobs were added
         let start = now_seconds() + 1

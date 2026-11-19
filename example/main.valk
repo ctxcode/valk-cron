@@ -35,7 +35,7 @@ fn main() {
         println("tick " + counter.ticks + " at " + time.DateTime.now().format("H:i:s.v"))
     }, "ticker") ! panic(E.message)
 
-    let stop: shared sync.CancelToken = sync.CancelToken.new() ! panic("Cannot make a token")
+    let stop: atomic sync.CancelToken = sync.CancelToken.new() ! panic("Cannot make a token")
     // A service would use signal.cancel_on_shutdown(stop) instead
     stop.cancel_after(3200)
     scheduler.run(stop) ! panic("Cannot run the scheduler")

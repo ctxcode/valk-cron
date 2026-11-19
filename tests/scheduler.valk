@@ -23,7 +23,7 @@ fn track(stats: Stats, work_ms: uint) {
 }
 
 fn run_for(scheduler: cron.Scheduler, ms: uint) {
-    let stop: shared sync.CancelToken = sync.CancelToken.new() !!
+    let stop: atomic sync.CancelToken = sync.CancelToken.new() !!
     stop.cancel_after(ms)
     scheduler.run(stop) !!
 }
