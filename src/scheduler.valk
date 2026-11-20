@@ -63,6 +63,23 @@ value MAX_WAIT_MS (60_000)
         return true
     }
 
+    /// Pauses the job called `name`; returns false when there is none. A run in progress
+    /// finishes.
+    + fn pause(name: String) bool {
+        let job = this.get(name)
+        if !isset(job) : return false
+        job.pause()
+        return true
+    }
+
+    /// Resumes the job called `name`; returns false when there is none.
+    + fn resume(name: String) bool {
+        let job = this.get(name)
+        if !isset(job) : return false
+        job.resume()
+        return true
+    }
+
     /// Runs the jobs until `stop` is cancelled, then waits for the runs in progress to finish.
     ///
     /// Called from a coroutine it only suspends that coroutine; called outside one it runs the
@@ -80,17 +97,27 @@ value MAX_WAIT_MS (60_000)
         this.wake = wake
         // Runs count from now, not from when the jobs were added
         let start = now_seconds() + 1
-        each this.jobs as job : job.due = job.schedule.next_instant(start, this.zone)
+        each this.jobs as job {
+            if !job.paused : job.due = job.schedule.next_instant(start, this.zone)
+        }
         while !stop.is_cancelled() {
             let now = time.unix_us().to(int)
             let soonest: int = now + MAX_WAIT_MS * 1000
             let i: uint = 0
             while i < this.jobs.length {
                 let job = this.jobs[i]
-                let due = job.due
-                if job.removed || !isset(due) {
+                if job.removed {
                     this.jobs.remove(i)
                     job.due = null
+                    continue
+                }
+                if job.paused {
+                    i++
+                    continue
+                }
+                let due = job.due
+                if !isset(due) {
+                    this.jobs.remove(i)
                     continue
                 }
                 let at = due
@@ -154,6 +181,8 @@ value MAX_WAIT_MS (60_000)
     ~ runs: uint (0)
     /// How many runs were skipped because the previous one was still busy.
     ~ skipped: uint (0)
+    /// Whether the job is paused. Paused jobs do not start new runs until resumed.
+    ~ paused: bool (false)
     callback: fn()()
     scheduler: Scheduler
     // The next run in Unix seconds, null when there is none
@@ -161,11 +190,11 @@ value MAX_WAIT_MS (60_000)
     active: uint (0)
     removed: bool (false)
 
-    /// Returns when the job runs next, in the scheduler's zone; `null` once it was removed or
-    /// its schedule has no more times.
+    /// Returns when the job runs next, in the scheduler's zone; `null` once it was removed,
+    /// while paused, or when its schedule has no more times.
     + fn next_run() ?time.DateTime {
         let due = this.due
-        if this.removed || !isset(due) : return null
+        if this.removed || this.paused || !isset(due) : return null
         return to_datetime(due, this.scheduler.zone)
     }
 
@@ -174,9 +203,31 @@ value MAX_WAIT_MS (60_000)
         return this.active > 0
     }
 
+    /// Returns whether the job is currently paused.
+    + fn is_paused() bool {
+        return this.paused
+    }
+
+    /// Pauses the job so no new runs start until `resume` is called. A run in progress finishes.
+    + fn pause() {
+        if this.paused || this.removed : return
+        this.paused = true
+        this.due = null
+        this.scheduler.poke()
+    }
+
+    /// Resumes a paused job, computing its next run from now without replaying missed runs.
+    + fn resume() {
+        if !this.paused || this.removed : return
+        this.paused = false
+        this.due = this.schedule.next_instant(now_seconds() + 1, this.scheduler.zone)
+        this.scheduler.poke()
+    }
+
     /// Removes the job from its scheduler. A run in progress finishes.
     + fn remove() {
         this.removed = true
+        this.paused = false
         this.scheduler.poke()
     }
 }

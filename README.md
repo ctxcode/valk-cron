@@ -58,8 +58,11 @@ fn main() {
   so runs do not drift. A job that does heavy work can start a thread of its own.
 - A job whose previous run is still busy skips the run and counts it in `skipped`; set
   `job.overlap = true` to run them side by side.
-- `run` stops when the token is cancelled and waits for the runs in progress. Jobs can be added
-  and removed while it runs: `scheduler.remove("backup")`, `job.remove()`, `scheduler.get(name)`.
+- `run` stops when the token is cancelled and waits for the runs in progress. Jobs can be added,
+  paused, resumed and removed while it runs: `scheduler.pause("backup")`,
+  `scheduler.resume("backup")`, `job.pause()`, `job.resume()`, `scheduler.remove("backup")`,
+  `job.remove()`, `scheduler.get(name)`. Paused jobs do not fire while paused and schedule their
+  next run from the time they are resumed without replaying missed runs.
 - A run that was missed because the thread was busy or the machine slept runs once, as soon as
   it can; more missed runs of the same job are dropped.
 

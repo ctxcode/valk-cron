@@ -64,6 +64,8 @@ expression no date can match, such as `0 0 30 2 *`.
     ~ name: String
     // Whether a run may start while the previous one is still busy. Off by default: such a run is skipped and counted in `skipped`.
     + overlap: bool
+    // Whether the job is paused. Paused jobs do not start new runs until resumed.
+    ~ paused: bool
     // How many runs have started.
     ~ runs: uint
     // The schedule the job runs on.
@@ -71,12 +73,18 @@ expression no date can match, such as `0 0 30 2 *`.
     // How many runs were skipped because the previous one was still busy.
     ~ skipped: uint
 
+    // Returns whether the job is currently paused.
+    + fn is_paused() bool
     // Returns whether a run of the job is in progress.
     + fn is_running() bool
-    // Returns when the job runs next, in the scheduler's zone; `null` once it was removed or its schedule has no more times.
+    // Returns when the job runs next, in the scheduler's zone; `null` once it was removed, while paused, or when its schedule has no more times.
     + fn next_run() ?DateTime
+    // Pauses the job so no new runs start until `resume` is called. A run in progress finishes.
+    + fn pause() void
     // Removes the job from its scheduler. A run in progress finishes.
     + fn remove() void
+    // Resumes a paused job, computing its next run from now without replaying missed runs.
+    + fn resume() void
 }
 ```
 
@@ -93,6 +101,10 @@ The name given to `add`, or an empty string.
 Whether a run may start while the previous one is still busy. Off by default: such a
 run is skipped and counted in `skipped`.
 
+#### paused
+
+Whether the job is paused. Paused jobs do not start new runs until resumed.
+
 #### runs
 
 How many runs have started.
@@ -105,18 +117,30 @@ The schedule the job runs on.
 
 How many runs were skipped because the previous one was still busy.
 
+#### is_paused
+
+Returns whether the job is currently paused.
+
 #### is_running
 
 Returns whether a run of the job is in progress.
 
 #### next_run
 
-Returns when the job runs next, in the scheduler's zone; `null` once it was removed or
-its schedule has no more times.
+Returns when the job runs next, in the scheduler's zone; `null` once it was removed,
+while paused, or when its schedule has no more times.
+
+#### pause
+
+Pauses the job so no new runs start until `resume` is called. A run in progress finishes.
 
 #### remove
 
 Removes the job from its scheduler. A run in progress finishes.
+
+#### resume
+
+Resumes a paused job, computing its next run from now without replaying missed runs.
 
 ```js
 // A parsed cron expression: the times it matches, and the next and previous ones.
@@ -196,10 +220,14 @@ each schedule.upcoming(time.DateTime.now()) as at, i {
     + fn get(name: String) ?Job
     // Returns a scheduler that reads its schedules in `zone`, by default `time.local_zone()`.
     + static fn new(zone: ?Zone (null)) Scheduler
+    // Pauses the job called `name`; returns false when there is none. A run in progress finishes.
+    + fn pause(name: String) bool
     // Removes the job called `name`; returns false when there is none. A run in progress finishes.
     + fn remove(name: String) bool
+    // Resumes the job called `name`; returns false when there is none.
+    + fn resume(name: String) bool
     // Runs the jobs until `stop` is cancelled, then waits for the runs in progress to finish.
-    + fn run(stop: shared CancelToken) void !sync:SyncError
+    + fn run(stop: CancelToken) void !sync:SyncError
 }
 ```
 
@@ -239,10 +267,19 @@ Returns the job called `name`, or `null`.
 
 Returns a scheduler that reads its schedules in `zone`, by default `time.local_zone()`.
 
+#### pause
+
+Pauses the job called `name`; returns false when there is none. A run in progress
+finishes.
+
 #### remove
 
 Removes the job called `name`; returns false when there is none. A run in progress
 finishes.
+
+#### resume
+
+Resumes the job called `name`; returns false when there is none.
 
 #### run
 

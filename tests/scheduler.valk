@@ -111,3 +111,111 @@ test "jobs are added, found and removed while running" {
     assert(!scheduler.remove("late"))
     assert(!isset(late.next_run()))
 }
+
+test "paused jobs do not fire and resume without catching up" {
+    let scheduler = cron.Scheduler.new(time.utc())
+    let stats = Stats {}
+    let job = scheduler.add("* * * * * *", fn() { track(stats, 0) }, "ticker") !!
+
+    // Pause before run: stays paused, no next_run, does not fire while paused
+    job.pause()
+    assert(job.paused && job.is_paused())
+    assert(!isset(job.next_run()))
+
+    let stop: atomic sync.CancelToken = sync.CancelToken.new() !!
+    let running = co scheduler.run(stop)
+
+    time.sleep_ms(2200)
+    assert(stats.runs == 0)
+    assert(job.runs == 0)
+    assert(job.skipped == 0)
+    assert(job.is_paused())
+
+    // Resume computes a strictly future next_run and does not burst-fire missed runs
+    let before_s = (time.unix_us() / 1_000_000).to(int)
+    job.resume()
+    assert(!job.paused && !job.is_paused())
+    let next = job.next_run() ?? panic("no next run after resume")
+    assert(next.unix_seconds() > before_s)
+
+    time.sleep_ms(2300)
+    // Pause again via scheduler convenience method; runs stop immediately
+    assert(scheduler.pause("ticker"))
+    assert(job.is_paused())
+    assert(!isset(job.next_run()))
+    let runs_at_pause = stats.runs
+    assert(runs_at_pause >= 1 && runs_at_pause <= 3)
+
+    time.sleep_ms(1600)
+    assert(stats.runs == runs_at_pause)
+
+    stop.cancel()
+    await running !!
+}
+
+test "pausing while a run is in progress lets it finish cleanly" {
+    let scheduler = cron.Scheduler.new(time.utc())
+    let stats = Stats {}
+    let job = scheduler.add("* * * * * *", fn() { track(stats, 1200) }, "slow") !!
+
+    let stop: atomic sync.CancelToken = sync.CancelToken.new() !!
+    let running = co scheduler.run(stop)
+
+    // Wait for first run to start
+    let waited: uint = 0
+    while stats.active == 0 && waited < 2000 {
+        time.sleep_ms(20)
+        waited += 20
+    }
+    assert(stats.active == 1 && job.is_running())
+
+    // Pause while the run is in progress
+    assert(scheduler.pause("slow"))
+    assert(job.is_paused())
+    assert(job.is_running())
+
+    // Wait past the completion of the in-progress run and another full second
+    time.sleep_ms(2200)
+    assert(stats.runs == 1)
+    assert(stats.finished == 1)
+    assert(stats.active == 0 && !job.is_running())
+    assert(job.skipped == 0)
+
+    // Resume via scheduler and confirm it runs again
+    assert(scheduler.resume("slow"))
+    assert(!job.is_paused())
+    time.sleep_ms(1500)
+    assert(stats.runs >= 2)
+
+    stop.cancel()
+    await running !!
+    assert(stats.finished == stats.runs)
+}
+
+test "scheduler pause and resume handle missing and removed jobs" {
+    let scheduler = cron.Scheduler.new(time.utc())
+    let job = scheduler.add("0 0 1 1 *", fn() {}, "annual") !!
+
+    assert(!scheduler.pause("missing"))
+    assert(!scheduler.resume("missing"))
+
+    // Pause and idempotent double-pause
+    assert(scheduler.pause("annual"))
+    assert(scheduler.pause("annual"))
+    assert(job.paused && job.is_paused())
+    assert(!isset(job.next_run()))
+
+    // Resume and idempotent double-resume
+    assert(scheduler.resume("annual"))
+    assert(scheduler.resume("annual"))
+    assert(!job.paused && !job.is_paused())
+    assert(isset(job.next_run()))
+
+    // Removing a paused job prevents resuming it
+    assert(scheduler.pause("annual"))
+    assert(scheduler.remove("annual"))
+    assert(!scheduler.pause("annual"))
+    assert(!scheduler.resume("annual"))
+    job.resume()
+    assert(!isset(job.next_run()))
+}
