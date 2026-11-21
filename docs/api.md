@@ -7,13 +7,6 @@ Namespaces: [main](#main)
 
 # main
 
-## Errors for 'main'
-
-```js
-// Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
-+ error Error (syntax, range, impossible, exists) payload { message: String }
-```
-
 ## Functions for 'main'
 
 ```js
@@ -22,6 +15,19 @@ Namespaces: [main](#main)
 ```
 
 ## Classes for 'main'
+
+```js
+// Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
++ union Error {
+    syntax(String)
+    range(String)
+    impossible(String)
+    exists(String)
+
+    + get message: String
+    + fn to_string() String
+}
+```
 
 ```js
 // A job of a `Scheduler`, from `Scheduler.add`.

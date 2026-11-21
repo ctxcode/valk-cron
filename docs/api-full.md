@@ -7,25 +7,6 @@ Namespaces: [main](#main)
 
 # main
 
-## Errors for 'main'
-
-```js
-// Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
-+ error Error (syntax, range, impossible, exists) payload { message: String }
-```
-
-### Error
-
-Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
-
-- `syntax`: the text is not a cron expression: a wrong number of fields, an unknown name or
-  macro, or a character that does not belong.
-- `range`: a value is outside its field, such as hour `24` or step `0`.
-- `impossible`: the expression reads, but no date ever matches it, such as `0 0 30 2 *`.
-- `exists`: `Scheduler.add` was given a name that another job already has.
-
-`message` says what is wrong and quotes the expression.
-
 ## Functions for 'main'
 
 ```js
@@ -56,6 +37,32 @@ Throws `syntax` or `range` with a message that names the problem, and `impossibl
 expression no date can match, such as `0 0 30 2 *`.
 
 ## Classes for 'main'
+
+```js
+// Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
++ union Error {
+    syntax(String)
+    range(String)
+    impossible(String)
+    exists(String)
+
+    + get message: String
+    + fn to_string() String
+}
+```
+
+### Error
+
+Thrown for a cron expression that cannot be used, and by `Scheduler.add`.
+
+- `syntax(message)`: the text is not a cron expression: a wrong number of fields, an unknown
+  name or macro, or a character that does not belong.
+- `range(message)`: a value is outside its field, such as hour `24` or step `0`.
+- `impossible(message)`: the expression reads, but no date ever matches it, such as
+  `0 0 30 2 *`.
+- `exists(message)`: `Scheduler.add` was given a name that another job already has.
+
+`message` says what is wrong and quotes the expression.
 
 ```js
 // A job of a `Scheduler`, from `Scheduler.add`.
@@ -238,7 +245,7 @@ Runs jobs on cron schedules, each run in a coroutine on the thread that calls `r
 ```valk
 let scheduler = cron.Scheduler.new()
 scheduler.add("*/5 * * * *", fn() { println("every five minutes") }) ! panic(E.message)
-let stop: shared sync.CancelToken = sync.CancelToken.new() ! panic("init")
+let stop: atomic sync.CancelToken = sync.CancelToken.new() ! panic("init")
 scheduler.run(stop) ! panic("init")
 ```
 

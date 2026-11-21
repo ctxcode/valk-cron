@@ -88,13 +88,13 @@ test "jobs are added, found and removed while running" {
 
     let refused = Stats {}
     scheduler.add("* * * * *", fn() {}, "late") ! {
-        assert(error_is(E.code, exists))
+        assert(E is .exists)
         assert(E.message == "A job named \"late\" already exists")
         refused.runs++
     }
     assert(refused.runs == 1)
     scheduler.add("* * * *", fn() {}) ! {
-        assert(error_is(E.code, syntax))
+        assert(E is .syntax)
     }
 
     assert(isset(scheduler.get("late")))

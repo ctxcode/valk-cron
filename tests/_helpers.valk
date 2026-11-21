@@ -36,9 +36,13 @@ fn prevs(expression: String, start: String, count: uint, zone: ?String (null)) S
 // The message of the error `parse` throws, or "" when it reads
 fn parse_error(expression: String) String {
     cron.parse(expression) ! {
-        let code = "impossible"
-        if error_is(E.code, syntax) : code = "syntax"
-        if error_is(E.code, range) : code = "range"
+        assert(E.to_string() == E.message)
+        let code = match E : String {
+            .syntax(_) => "syntax"
+            .range(_) => "range"
+            .impossible(_) => "impossible"
+            .exists(_) => "exists"
+        }
         return code + ": " + E.message
     }
     return ""

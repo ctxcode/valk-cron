@@ -56,7 +56,7 @@ value KIND_DOW (5)
     s.weekdays = parse_field(s, fields[at + 4], KIND_DOW) !>
     s.repeats = s.hours == ALL_HOURS
 
-    if !can_match(s) : throw .impossible { message: invalid(expression, "no date matches it") }
+    if !can_match(s) : throw .impossible(invalid(expression, "no date matches it"))
     return s
 }
 
@@ -77,11 +77,11 @@ fn split_fields(text: String) Array[String] {
 }
 
 fn syntax_error(expression: String, message: String) !Error $throw {
-    throw .syntax { message: invalid(expression, message) }
+    throw .syntax(invalid(expression, message))
 }
 
 fn range_error(expression: String, message: String) !Error $throw {
-    throw .range { message: invalid(expression, message) }
+    throw .range(invalid(expression, message))
 }
 
 fn invalid(expression: String, message: String) String {

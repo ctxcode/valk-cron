@@ -4,7 +4,7 @@ Cron expressions and a job scheduler for [Valk](https://valk-lang.dev): the next
 times of an expression in any time zone, and jobs that run on them in coroutines. Purely written
 in Valk.
 
-Requires Valk 0.7.6 or newer.
+Requires Valk 0.9.1 or newer.
 
 ## Install
 
@@ -48,7 +48,7 @@ fn main() {
     let at = backup.next_run()
     if isset(at) : println("next backup at " + at)
 
-    let stop: shared sync.CancelToken = sync.CancelToken.new() ! panic("init")
+    let stop: atomic sync.CancelToken = sync.CancelToken.new() ! panic("init")
     signal.cancel_on_shutdown(stop) ! panic("signals")
     scheduler.run(stop) ! panic("init")    // returns after Ctrl-C and the running jobs ended
 }
@@ -94,7 +94,7 @@ A bad expression throws `cron.Error` with a message that names the problem:
 Invalid cron expression "0 24 * * *": hour 24 is out of range 0-23
 ```
 
-The codes are `syntax`, `range`, `impossible` (no date matches, as `0 0 30 2 *`) and, from
+The variants are `syntax`, `range`, `impossible` (no date matches, as `0 0 30 2 *`) and, from
 `Scheduler.add`, `exists` (the name is taken).
 
 ## Daylight saving time

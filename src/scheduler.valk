@@ -9,7 +9,7 @@ value MAX_WAIT_MS (60_000)
 /// ```valk
 /// let scheduler = cron.Scheduler.new()
 /// scheduler.add("*/5 * * * *", fn() { println("every five minutes") }) ! panic(E.message)
-/// let stop: shared sync.CancelToken = sync.CancelToken.new() ! panic("init")
+/// let stop: atomic sync.CancelToken = sync.CancelToken.new() ! panic("init")
 /// scheduler.run(stop) ! panic("init")
 /// ```
 ///
@@ -37,7 +37,7 @@ value MAX_WAIT_MS (60_000)
     + fn add(expression: String, callback: fn()(), name: String ("")) Job !Error {
         let schedule = parse(expression) !>
         if name.length > 0 && isset(this.get(name)) {
-            throw .exists { message: "A job named \"" + name + "\" already exists" }
+            throw .exists("A job named \"" + name + "\" already exists")
         }
         let job = Job { name: name, schedule: schedule, callback: callback, scheduler: this }
         job.due = schedule.next_instant(now_seconds() + 1, this.zone)
@@ -131,7 +131,7 @@ value MAX_WAIT_MS (60_000)
             let wait_ms = (soonest - now + 999) / 1000
             if wait_ms < 1 : wait_ms = 1
             wake.recv(wait_ms.to(uint), stop) ! {
-                if error_is(E.code, cancelled) : break
+                if E is .cancelled : break
             }
         }
         while this.busy > 0 : wake.recv() _
