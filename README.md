@@ -4,7 +4,7 @@ Cron expressions and a job scheduler for [Valk](https://valk-lang.dev): the next
 times of an expression in any time zone, and jobs that run on them in coroutines. Purely written
 in Valk.
 
-Requires Valk 0.9.1 or newer.
+Requires Valk 0.10.0 or newer.
 
 ## Install
 
