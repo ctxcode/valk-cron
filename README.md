@@ -9,7 +9,7 @@ Requires Valk 0.10.0 or newer.
 ## Install
 
 ```
-vman install github.com/ctxcode/valk-cron
+vman install github.com/zikue/valk-cron
 ```
 
 ## Example
